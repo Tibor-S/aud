@@ -7,16 +7,11 @@ mod stream;
 use cpal::traits::StreamTrait;
 use log::debug;
 use manager::Manager;
-use serde::de;
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-};
+use std::sync::{Arc, Mutex};
 use tauri::{Manager as TManager, State, Window};
 
 struct Signal(Arc<Mutex<Vec<f32>>>);
-struct ManagerState(Manager);
-struct StreamingState(Mutex<bool>);
+struct ManagerState(Mutex<Manager>);
 
 #[tauri::command]
 fn emit_signal(window: Window, signal: State<Signal>) -> () {
@@ -30,15 +25,27 @@ fn emit_signal(window: Window, signal: State<Signal>) -> () {
 #[tauri::command]
 async fn init_audio_capture(
     manager: State<'_, ManagerState>,
-    streaming: State<'_, StreamingState>,
     signal: State<'_, Signal>,
-) -> AudioCaptureResult<()> {
+) -> RustResult<()> {
     debug!("init_audio_capture");
 
+    if manager.0.lock().unwrap().is_streaming() {
+        return Err(RustError::Error {
+            msg: "Already streaming".into(),
+        });
+    }
+
     let host = cpal::default_host();
-    let manager = manager.0.clone();
     let signal = signal.0.clone();
-    let sig_max = manager.buffer_max;
+    let sig_max = manager.0.lock().unwrap().buffer_max;
+    let device = manager
+        .0
+        .lock()
+        .unwrap()
+        .device(&host)
+        .map_err(|e| RustError::Error {
+            msg: format!("{:?}", e),
+        })?;
     let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         let mut signal = signal.lock().unwrap();
         let signal_length = signal.len();
@@ -50,33 +57,79 @@ async fn init_audio_capture(
         let new_data = &data[si..data_length];
         signal.extend(new_data);
     };
-    let stream =
-        stream::build(&manager.clone(), &host, callback).map_err(|e| AudioCaptureError::Error {
+
+    manager.0.lock().unwrap().set_streaming(true);
+    manager.0.lock().unwrap().req_start();
+    let keep_streaming = Arc::new(Mutex::new(true));
+    let t_keep_streaming = keep_streaming.clone();
+    let handle: std::thread::JoinHandle<RustResult<()>> = std::thread::spawn(move || {
+        let stream = stream::build(device, callback).map_err(|e| RustError::Error {
             msg: format!("{:?}", e),
         })?;
-    stream.play().map_err(|e| AudioCaptureError::Error {
-        msg: format!("{:?}", e),
-    })?;
-    *streaming.0.lock().unwrap() = true;
-    while *streaming.0.lock().unwrap() {
+        stream.play().map_err(|e| RustError::Error {
+            msg: format!("{:?}", e),
+        })?;
+        while *t_keep_streaming.lock().unwrap() {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+        drop(stream);
+        debug!("stream dropped");
+        Ok(())
+    });
+    debug!("req_is: {}", manager.0.lock().unwrap().req_is());
+    while manager.0.lock().unwrap().req_is() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
-    drop(stream);
+    *keep_streaming.lock().unwrap() = false;
 
+    handle.join().map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })??;
+    manager.0.lock().unwrap().set_streaming(false);
     Ok(())
 }
 
-type AudioCaptureResult<T> = Result<T, AudioCaptureError>;
-
-#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
-pub enum AudioCaptureError {
-    #[error("Error: {msg}")]
-    Error { msg: String },
+#[tauri::command]
+fn query_devices(manager: State<ManagerState>) -> RustResult<Vec<String>> {
+    manager
+        .0
+        .lock()
+        .unwrap()
+        .query_devices(cpal::default_host())
+        .map_err(|e| RustError::Error {
+            msg: format!("{:?}", e),
+        })
 }
 
 #[tauri::command]
-fn stop_stream(streaming: State<StreamingState>) {
-    *streaming.0.lock().unwrap() = false;
+fn change_device(name: String, manager: State<ManagerState>) -> RustResult<String> {
+    manager
+        .0
+        .lock()
+        .unwrap()
+        .change_device(cpal::default_host(), name.as_str())
+        .map_err(|e| RustError::Error {
+            msg: format!("{:?}", e),
+        })
+}
+
+#[tauri::command]
+fn current_device(manager: State<ManagerState>) -> String {
+    manager
+        .0
+        .lock()
+        .unwrap()
+        .device_name()
+        .unwrap_or("Default".into())
+}
+
+#[tauri::command]
+async fn stop_stream(manager: State<'_, ManagerState>) -> RustResult<()> {
+    manager.0.lock().unwrap().req_stop();
+    while manager.0.lock().unwrap().is_streaming() {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    Ok(())
 }
 
 fn main() {
@@ -84,16 +137,26 @@ fn main() {
     debug!("rust");
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(ManagerState(Manager::new()));
-            app.manage(StreamingState(Mutex::new(false)));
+            app.manage(ManagerState(Mutex::new(Manager::new())));
             app.manage(Signal(Arc::new(Mutex::new(Vec::<f32>::new()))));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             emit_signal,
             init_audio_capture,
-            stop_stream
+            stop_stream,
+            query_devices,
+            change_device,
+            current_device
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+type RustResult<T> = Result<T, RustError>;
+
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+pub enum RustError {
+    #[error("Error: {msg}")]
+    Error { msg: String },
 }

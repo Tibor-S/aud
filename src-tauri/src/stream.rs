@@ -1,17 +1,12 @@
 use std::ops::Div;
 
-use crate::manager::{self, Manager};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crate::manager::{self};
+use cpal::traits::DeviceTrait;
 
-pub fn build<T>(
-    manager: &Manager,
-    host: &cpal::Host,
-    data_callback: T,
-) -> StreamResult<cpal::Stream>
+pub fn build<T>(device: cpal::Device, data_callback: T) -> StreamResult<cpal::Stream>
 where
     T: Fn(&[f32], &cpal::InputCallbackInfo) + Sync + Send + 'static,
 {
-    let device = manager.device(host.clone())?;
     let config = device
         .supported_input_configs()?
         .next()
