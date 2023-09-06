@@ -112,6 +112,14 @@ impl Manager {
     pub fn is_streaming(&mut self) -> bool {
         self.is_streaming
     }
+
+    pub fn resolution(&self) -> usize {
+        self.buffer_max
+    }
+
+    pub fn set_resolution(&mut self, resolution: usize) {
+        self.buffer_max = resolution;
+    }
 }
 
 pub type ManagerResult<T> = Result<T, ManagerError>;

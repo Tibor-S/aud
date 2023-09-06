@@ -14,11 +14,13 @@ struct Signal(Arc<Mutex<Vec<f32>>>);
 struct ManagerState(Mutex<Manager>);
 
 #[tauri::command]
-fn emit_signal(window: Window, signal: State<Signal>) -> () {
+fn emit_signal(window: Window, signal: State<Signal>, manager: State<ManagerState>) -> () {
     let signal = signal.0.lock().unwrap();
     let len = signal.len();
+    let max_len = manager.0.lock().unwrap().resolution();
+
     window
-        .emit("signal", Vec::from(&signal[0..1024.min(len)]))
+        .emit("signal", Vec::from(&signal[0..max_len.min(len)]))
         .unwrap();
 }
 
@@ -37,7 +39,7 @@ async fn init_audio_capture(
 
     let host = cpal::default_host();
     let signal = signal.0.clone();
-    let sig_max = manager.0.lock().unwrap().buffer_max;
+    let sig_max = manager.0.lock().unwrap().resolution();
     let device = manager
         .0
         .lock()
@@ -52,7 +54,9 @@ async fn init_audio_capture(
         let data_length = data.len();
         let new_length = signal_length + data_length;
         let si = 0.max((data_length as i32) - (sig_max as i32)) as usize;
-        let remove_length = (new_length as i32 - sig_max as i32).max(0) as usize;
+        let remove_length = (new_length as i32 - sig_max as i32)
+            .max(0)
+            .min(signal_length as i32) as usize;
         signal.drain(0..remove_length);
         let new_data = &data[si..data_length];
         signal.extend(new_data);
@@ -102,7 +106,7 @@ fn query_devices(manager: State<ManagerState>) -> RustResult<Vec<String>> {
 }
 
 #[tauri::command]
-fn change_device(name: String, manager: State<ManagerState>) -> RustResult<String> {
+fn change_device(name: String, manager: State<ManagerState>) -> RustResult<()> {
     manager
         .0
         .lock()
@@ -110,7 +114,22 @@ fn change_device(name: String, manager: State<ManagerState>) -> RustResult<Strin
         .change_device(cpal::default_host(), name.as_str())
         .map_err(|e| RustError::Error {
             msg: format!("{:?}", e),
-        })
+        })?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_resolution(resolution: usize, manager: State<'_, ManagerState>) -> RustResult<()> {
+    debug!("{}", manager.0.lock().unwrap().resolution());
+    manager.0.lock().unwrap().set_resolution(resolution);
+    debug!("{}", manager.0.lock().unwrap().resolution());
+    Ok(())
+}
+
+#[tauri::command]
+async fn resolution(manager: State<'_, ManagerState>) -> RustResult<usize> {
+    debug!("{}", manager.0.lock().unwrap().resolution());
+    Ok(manager.0.lock().unwrap().resolution())
 }
 
 #[tauri::command]
@@ -124,8 +143,12 @@ fn current_device(manager: State<ManagerState>) -> String {
 }
 
 #[tauri::command]
-async fn stop_stream(manager: State<'_, ManagerState>) -> RustResult<()> {
+async fn stop_stream(
+    manager: State<'_, ManagerState>,
+    signal: State<'_, Signal>,
+) -> RustResult<()> {
     manager.0.lock().unwrap().req_stop();
+    signal.0.lock().unwrap().clear();
     while manager.0.lock().unwrap().is_streaming() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
@@ -147,7 +170,9 @@ fn main() {
             stop_stream,
             query_devices,
             change_device,
-            current_device
+            current_device,
+            set_resolution,
+            resolution
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

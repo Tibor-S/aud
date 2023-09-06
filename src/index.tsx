@@ -28,4 +28,4 @@ window.addEventListener("keydown", function (event) {
 }, true);
 
 
-render(() => <App settingsOpen={settingsOpen} />, root!)
+render(() => <App settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen}/>, root!)
