@@ -15,7 +15,7 @@ function App(props: {
   return (
     <>
       <SignalRender />
-      {settingsOpen() ? <Settings exit={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen() ? <Settings exit={() => {console.log("exit"); setSettingsOpen(false)}} /> : null}
     </>
   )
 }

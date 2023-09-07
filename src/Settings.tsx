@@ -56,20 +56,20 @@ export default (props: {
       </div>
       <div>
         <h2>Resolution</h2>
-        <span>
-          <label for="resolution">{resMultiplier()}x</label>
+        <span id="resolution">
+          <label for="resolution">{Math.max(Math.round(10*resMultiplier()) / 10, 0.05)}x</label>
           <input 
-            type="range" name="resolution" id="resolution" 
-            min={0} max={1} step={0.01}
-            value={calcMultiplierInverse(resMultiplier(), 0.1, 10)} onInput={(e) => 
-              setResMultiplier(calcResMultiplier(parseFloat(e.target.value), 0.1, 10))
+            type="range" name="resolution"  
+            min={0} max={1} step={0.000001}
+            value={calcMultiplierInverse(resMultiplier())} onInput={(e) => 
+              setResMultiplier(calcResMultiplier(parseFloat(e.target.value)))
             } />
         </span>
       </div>
       <div>
         <button onClick={async () => {
           let promises: Promise<any>[] = []        
-
+          console.log("apply")
           promises.push(invoke("change_device", { name: device() })
             .catch((err: Error) => {
               console.error(err)
@@ -80,19 +80,25 @@ export default (props: {
               console.error(err)
             }));
 
+          promises.push(invoke("stop_stream", {})
+          .catch((err: Error) => {
+            console.error(err)
+          }));
+
           
-          await Promise.all(promises).then(async () => {    
-              await invoke("stop_stream", {})
-              return
-            })
-            .then(async() => {
-              await invoke("init_audio_capture", {})
-              return
-            })
+          await Promise.all(promises)
             .catch((err: Error) => {
               console.error(err)
             });
+          console.log("starting stream capture")
+          invoke("init_audio_capture", {})
+            .catch((err: Error) => {
+              console.error(err)
+            });
+          console.log("exiting callback")
           exit()
+
+          console.log("done")
         }}>
           Apply
         </button>
@@ -106,15 +112,19 @@ export default (props: {
 
 // 0 <= x <= 1
 // https://www.desmos.com/calculator/bmpwql3xjc
-const calcResMultiplier = (x: number, min: number, max: number) => {
-  const a = 0.1
+const calcResMultiplier = (x: number) => {
+  const min = 0.01
+  const max = 3
+  const a = 0.970396
   const b = Math.log((max - min) / a + 1)
   const c = min - a
 
-  return Math.round(10 * a * Math.exp(b * x) + c) /10
+  return a * Math.exp(b * x) + c
 }
-const calcMultiplierInverse = (y: number, min: number, max: number) => {
-  const a = 0.1
+const calcMultiplierInverse = (y: number) => {
+  const min = 0.01
+  const max = 3
+  const a = 0.970396
   const b = Math.log((max - min) / a + 1)
   const c = min - a
   return Math.log((y - c) / a) / b

@@ -30,7 +30,7 @@ export default (props: JSX.CanvasHTMLAttributes<HTMLCanvasElement>) => {
       if (signal.length < 2) return;
       const height = ctxHeight()
       const width = ctxWidth()
-      const dx = width / signal.length
+      const dx = width / (signal.length - 1)
 
       ctx.clearRect(0, 0, width, height);
       ctx.strokeStyle = "black";

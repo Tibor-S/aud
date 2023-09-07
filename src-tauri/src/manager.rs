@@ -3,7 +3,7 @@ use log::{debug, warn};
 
 #[derive(Clone, Debug)]
 pub struct Manager {
-    pub buffer_max: usize,
+    buffer_max: usize,
     device_name: Option<String>,
     req_streaming: bool,
     is_streaming: bool,

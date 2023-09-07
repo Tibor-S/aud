@@ -18,3 +18,17 @@
   align-items: center;
   padding: 0.5rem 20%;
 }
+/* 
+#settings > div > *:last-child {
+  flex: 1
+} */
+
+#resolution {
+  flex: 1;
+}
+
+
+
+#resolution input {
+  width: 100%;
+}
