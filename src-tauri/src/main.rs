@@ -7,6 +7,7 @@ mod stream;
 use cpal::traits::StreamTrait;
 use log::debug;
 use manager::Manager;
+use shazamrs::from_buffer;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager as TManager, State, Window};
 
@@ -155,6 +156,123 @@ async fn stop_stream(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct Art {
+    background: Option<String>,
+    coverart: Option<String>,
+    coverarthq: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct Track {
+    pub art: Art,
+    pub artist: Option<String>,
+    pub track: Option<String>,
+    pub album: Option<String>,
+}
+
+#[tauri::command]
+async fn recognize(manager: State<'_, ManagerState>) -> RustResult<Track> {
+    // let id = Uuid::new_v4();
+    // let path = std::env::temp_dir()
+    //     .join(id.to_string())
+    //     .with_extension("wav");
+
+    let host = cpal::default_host();
+    let device = manager
+        .0
+        .lock()
+        .unwrap()
+        .device(&host)
+        .map_err(|e| RustError::Error {
+            msg: format!("{:?}", e),
+        })?;
+    let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let t1_buffer = buffer.clone();
+    let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        t1_buffer.lock().unwrap().extend(data.iter());
+    };
+
+    debug!("init recognize stream");
+    let stream = stream::build(device, callback).map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })?;
+    stream.play().map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })?;
+
+    while buffer.lock().unwrap().len() < 48000 * 5 {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    drop(stream);
+    debug!("recognize stream dropped");
+    let b = buffer.lock().unwrap().clone();
+    let trck = from_buffer(b, 48000).map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })?;
+    let obj = trck.as_object();
+    let track_obj = obj
+        .and_then(|obj| obj.get("track"))
+        .and_then(|track| track.as_object());
+    let images = track_obj
+        .and_then(|track| track.get("images"))
+        .and_then(|images| images.as_object());
+    let background = images
+        .and_then(|images| images.get("background"))
+        .and_then(|bkgrnd| bkgrnd.as_str())
+        .map(|bkgrnd| bkgrnd.to_owned());
+    let coverart = images
+        .and_then(|images| images.get("coverart"))
+        .and_then(|cvrrt| cvrrt.as_str())
+        .map(|bkgrnd| bkgrnd.to_owned());
+    let coverarthq = images
+        .and_then(|images| images.get("coverarthq"))
+        .and_then(|cvrrthq| cvrrthq.as_str())
+        .map(|cvrrthq| cvrrthq.to_owned());
+    let artist = track_obj
+        .and_then(|track| track.get("subtitle"))
+        .and_then(|sbttl| sbttl.as_str())
+        .map(|sbttl| sbttl.to_owned());
+    let track = track_obj
+        .and_then(|track| track.get("title"))
+        .and_then(|ttl| ttl.as_str())
+        .map(|ttl| ttl.to_owned());
+    let sections = track_obj
+        .and_then(|track| track.get("sections"))
+        .and_then(|sections| sections.as_array());
+    let metadata = sections.and_then(|sections| {
+        sections
+            .iter()
+            .find_map(|v| v.get("metadata"))
+            .and_then(|metadata| metadata.as_array())
+    });
+    let album = metadata.and_then(|metadata| {
+        metadata
+            .iter()
+            .find(|el| {
+                el.get("title")
+                    .and_then(|val| val.as_str())
+                    .is_some_and(|val| val == "Album")
+            })
+            .and_then(|el| {
+                el.get("text")
+                    .and_then(|val| val.as_str())
+                    .map(|val| val.to_owned())
+            })
+    });
+    let ret = Track {
+        art: Art {
+            background,
+            coverart,
+            coverarthq,
+        },
+        artist,
+        track,
+        album,
+    };
+    Ok(ret)
+}
+
 fn main() {
     env_logger::init();
     debug!("rust");
@@ -172,7 +290,8 @@ fn main() {
             change_device,
             current_device,
             set_resolution,
-            resolution
+            resolution,
+            recognize
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

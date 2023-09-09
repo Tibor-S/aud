@@ -3,4 +3,5 @@
 #signal-render {
     width: 100%;
     height: 100%;
+    background-image: linear-gradient(to top, #000000da 0%, #0000006e 75%, #00000042 100%);
 }

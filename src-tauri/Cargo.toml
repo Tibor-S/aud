@@ -23,6 +23,9 @@ cpal = "0.15.2"
 thiserror = "1.0.48"
 env_logger = "0.10.0"
 log = "0.4.20"
+hound = "3.5.0"
+uuid = {version="1.4.1", features= ["v4"] }
+shazamrs = { git = "https://github.com/Tibor-S/shazamrs.git" }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.

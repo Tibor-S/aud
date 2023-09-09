@@ -33,7 +33,8 @@ export default (props: JSX.CanvasHTMLAttributes<HTMLCanvasElement>) => {
       const dx = width / (signal.length - 1)
 
       ctx.clearRect(0, 0, width, height);
-      ctx.strokeStyle = "black";
+      ctx.strokeStyle = "white";
+      ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(0, (signal[0] + 1) * height / 2);
       for (let i = 0; i < signal.length; i++) {
