@@ -11,7 +11,7 @@ where
         .supported_input_configs()?
         .next()
         .ok_or(StreamError::NoConfigAvailable)?
-        .with_max_sample_rate();
+        .with_sample_rate(cpal::SampleRate(48000));
     let config: cpal::StreamConfig = config.into();
     let num_channels = config.channels as usize;
 
