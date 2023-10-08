@@ -6,67 +6,101 @@ mod stream;
 
 use cpal::traits::StreamTrait;
 use log::debug;
-use manager::Manager;
 use shazamrs::from_buffer;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager as TManager, State, Window};
+use tauri::{State, Window};
 
-struct Signal(Arc<Mutex<Vec<f32>>>);
-struct ManagerState(Mutex<Manager>);
+struct AudioBufferState(Arc<Mutex<Vec<f32>>>);
+struct BufferResolutionState(Arc<Mutex<usize>>);
+struct BufferMaxLengthState(Arc<Mutex<usize>>);
+struct IsStreamingState(Arc<Mutex<bool>>);
+struct ReqStreamingState(Arc<Mutex<bool>>);
+struct DeviceNameState(Arc<Mutex<Option<String>>>);
 
 #[tauri::command]
-fn emit_signal(window: Window, signal: State<Signal>, manager: State<ManagerState>) -> () {
-    let signal = signal.0.lock().unwrap();
-    let len = signal.len();
-    let max_len = manager.0.lock().unwrap().resolution();
-
-    window
-        .emit("signal", Vec::from(&signal[0..max_len.min(len)]))
-        .unwrap();
+fn emit_signal(
+    window: Window,
+    audio_buffer_state: State<AudioBufferState>,
+    buffer_resolution_state: State<BufferResolutionState>,
+) -> () {
+    let audio_buffer = audio_buffer_state.0.lock().unwrap();
+    let buffer_resolution = buffer_resolution_state.0.lock().unwrap();
+    let current_len = audio_buffer.len();
+    let len = buffer_resolution.min(current_len);
+    let ret = Vec::from(&audio_buffer[(current_len - len)..current_len]);
+    window.emit("signal", ret).unwrap();
 }
 
 #[tauri::command]
 async fn init_audio_capture(
-    manager: State<'_, ManagerState>,
-    signal: State<'_, Signal>,
+    is_streaming_state: State<'_, IsStreamingState>,
+    req_streaming_state: State<'_, ReqStreamingState>,
+    audio_buffer_state: State<'_, AudioBufferState>,
+    buffer_max_length_state: State<'_, BufferMaxLengthState>,
+    device_name_state: State<'_, DeviceNameState>,
 ) -> RustResult<()> {
-    debug!("init_audio_capture");
+    log::info!("init_audio_capture");
+    let is_streaming = is_streaming_state.0.clone();
+    let req_streaming = req_streaming_state.0.clone();
+    let audio_buffer = audio_buffer_state.0.clone();
+    let buffer_max_length = buffer_max_length_state.0.clone();
+    let device_name = device_name_state.0.clone();
+    log::info!(
+        "init_audio_capture :: is_streaming: {:?}",
+        *is_streaming.lock().unwrap()
+    );
+    log::info!(
+        "init_audio_capture :: req_streaming: {:?}",
+        *req_streaming.lock().unwrap()
+    );
+    log::info!(
+        "init_audio_capture :: audio_buffer length: {:?}",
+        audio_buffer.lock().unwrap().len()
+    );
+    log::info!(
+        "init_audio_capture :: buffer_max_length: {:?}",
+        *buffer_max_length.lock().unwrap()
+    );
+    log::info!(
+        "init_audio_capture :: device_name: {:?}",
+        *device_name.lock().unwrap()
+    );
 
-    if manager.0.lock().unwrap().is_streaming() {
+    if *is_streaming.lock().unwrap() {
+        log::warn!("init_audio_capture :: Already streaming");
         return Err(RustError::Error {
             msg: "Already streaming".into(),
         });
     }
 
     let host = cpal::default_host();
-    let signal = signal.0.clone();
-    let sig_max = manager.0.lock().unwrap().resolution();
-    let device = manager
-        .0
-        .lock()
-        .unwrap()
-        .device(&host)
-        .map_err(|e| RustError::Error {
+    let device = manager::device(&host, (*device_name.lock().unwrap()).clone()).map_err(|e| {
+        RustError::Error {
             msg: format!("{:?}", e),
-        })?;
+        }
+    })?;
     let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-        let mut signal = signal.lock().unwrap();
-        let signal_length = signal.len();
+        let buffer_max_length = *buffer_max_length.lock().unwrap();
+        let mut audio_buffer = audio_buffer.lock().unwrap();
+        let current_length = audio_buffer.len();
         let data_length = data.len();
-        let new_length = signal_length + data_length;
-        let si = 0.max((data_length as i32) - (sig_max as i32)) as usize;
-        let remove_length = (new_length as i32 - sig_max as i32)
+        let new_length = current_length + data_length;
+        let si = 0.max((data_length as i32) - (buffer_max_length as i32)) as usize;
+        let remove_length = (new_length as i32 - buffer_max_length as i32)
             .max(0)
-            .min(signal_length as i32) as usize;
-        signal.drain(0..remove_length);
+            .min(current_length as i32) as usize;
+        audio_buffer.drain(0..remove_length);
         let new_data = &data[si..data_length];
-        signal.extend(new_data);
+        audio_buffer.extend(new_data);
     };
 
-    manager.0.lock().unwrap().set_streaming(true);
-    manager.0.lock().unwrap().req_start();
+    *is_streaming.lock().unwrap() = true;
+    log::info!("init_audio_capture :: is_streaming set to true");
+    *req_streaming.lock().unwrap() = true;
+    log::info!("init_audio_capture :: req_streaming set to true");
+
     let keep_streaming = Arc::new(Mutex::new(true));
-    let t_keep_streaming = keep_streaming.clone();
+    let thread_keep_streaming = keep_streaming.clone();
     let handle: std::thread::JoinHandle<RustResult<()>> = std::thread::spawn(move || {
         let stream = stream::build(device, callback).map_err(|e| RustError::Error {
             msg: format!("{:?}", e),
@@ -74,15 +108,15 @@ async fn init_audio_capture(
         stream.play().map_err(|e| RustError::Error {
             msg: format!("{:?}", e),
         })?;
-        while *t_keep_streaming.lock().unwrap() {
+        while *thread_keep_streaming.lock().unwrap() {
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
         drop(stream);
         debug!("stream dropped");
         Ok(())
     });
-    debug!("req_is: {}", manager.0.lock().unwrap().req_is());
-    while manager.0.lock().unwrap().req_is() {
+    log::info!("init_audio_capture :: waiting for req_streaming to be false");
+    while *req_streaming.lock().unwrap() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
     *keep_streaming.lock().unwrap() = false;
@@ -90,69 +124,82 @@ async fn init_audio_capture(
     handle.join().map_err(|e| RustError::Error {
         msg: format!("{:?}", e),
     })??;
-    manager.0.lock().unwrap().set_streaming(false);
+    *is_streaming.lock().unwrap() = false;
+    log::info!("init_audio_capture :: is_streaming set to false");
+    log::info!("init_audio_capture :: OK");
     Ok(())
 }
 
 #[tauri::command]
-fn query_devices(manager: State<ManagerState>) -> RustResult<Vec<String>> {
-    manager
-        .0
-        .lock()
-        .unwrap()
-        .query_devices(cpal::default_host())
-        .map_err(|e| RustError::Error {
-            msg: format!("{:?}", e),
-        })
+fn query_devices() -> RustResult<Vec<String>> {
+    let host = cpal::default_host();
+    manager::query_devices(&host).map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })
 }
 
 #[tauri::command]
-fn change_device(name: String, manager: State<ManagerState>) -> RustResult<()> {
-    manager
-        .0
-        .lock()
-        .unwrap()
-        .change_device(cpal::default_host(), name.as_str())
-        .map_err(|e| RustError::Error {
-            msg: format!("{:?}", e),
-        })?;
+fn change_device(name: String, device_name_state: State<DeviceNameState>) -> RustResult<()> {
+    log::info!("change_device :: name: {}", name);
+    let device_name = device_name_state.0.clone();
+    let host = cpal::default_host();
+
+    if manager::is_device(&host, &*name).map_err(|e| RustError::Error {
+        msg: format!("{:?}", e),
+    })? {
+        *device_name.lock().unwrap() = Some(name.clone());
+    }
+
+    log::info!("change_device :: OK");
+
     Ok(())
 }
 
 #[tauri::command]
-async fn set_resolution(resolution: usize, manager: State<'_, ManagerState>) -> RustResult<()> {
-    debug!("{}", manager.0.lock().unwrap().resolution());
-    manager.0.lock().unwrap().set_resolution(resolution);
-    debug!("{}", manager.0.lock().unwrap().resolution());
+fn set_resolution(
+    buffer_resolution_state: State<BufferResolutionState>,
+    resolution: usize,
+) -> RustResult<()> {
+    log::info!("set_resolution :: resolution: {}", resolution);
+    let buffer_resolution = buffer_resolution_state.0.clone();
+    *buffer_resolution.lock().unwrap() = resolution;
+    log::info!("set_resolution :: OK");
     Ok(())
 }
 
 #[tauri::command]
-async fn resolution(manager: State<'_, ManagerState>) -> RustResult<usize> {
-    debug!("{}", manager.0.lock().unwrap().resolution());
-    Ok(manager.0.lock().unwrap().resolution())
+fn resolution(buffer_resolution_state: State<'_, BufferResolutionState>) -> RustResult<usize> {
+    let buffer_resolution = buffer_resolution_state.0.clone();
+    let resolution = *buffer_resolution.lock().unwrap();
+    Ok(resolution)
 }
 
 #[tauri::command]
-fn current_device(manager: State<ManagerState>) -> String {
-    manager
-        .0
-        .lock()
-        .unwrap()
-        .device_name()
-        .unwrap_or("Default".into())
+fn current_device(device_name_state: State<'_, DeviceNameState>) -> String {
+    let device_name = device_name_state.0.clone();
+    let guard = device_name.lock().unwrap();
+    (*guard).clone().unwrap_or("Default".into())
 }
 
 #[tauri::command]
 async fn stop_stream(
-    manager: State<'_, ManagerState>,
-    signal: State<'_, Signal>,
+    is_streaming_state: State<'_, IsStreamingState>,
+    req_streaming_state: State<'_, ReqStreamingState>,
+    audio_buffer_state: State<'_, AudioBufferState>,
 ) -> RustResult<()> {
-    manager.0.lock().unwrap().req_stop();
-    signal.0.lock().unwrap().clear();
-    while manager.0.lock().unwrap().is_streaming() {
+    log::info!("stop_stream");
+    let is_streaming = is_streaming_state.0.clone();
+    let req_streaming = req_streaming_state.0.clone();
+    let audio_buffer = audio_buffer_state.0.clone();
+    *req_streaming.lock().unwrap() = false;
+    log::info!("stop_stream :: req_streaming set to false");
+    audio_buffer.lock().unwrap().clear();
+    log::info!("stop_stream :: audio_buffer cleared");
+    log::info!("stop_stream :: waiting for is_streaming to be false");
+    while *is_streaming.lock().unwrap() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
+    log::info!("stop_stream :: OK");
     Ok(())
 }
 
@@ -172,21 +219,21 @@ struct Track {
 }
 
 #[tauri::command]
-async fn recognize(manager: State<'_, ManagerState>) -> RustResult<Track> {
+async fn recognize(device_name_state: State<'_, DeviceNameState>) -> RustResult<Track> {
     // let id = Uuid::new_v4();
     // let path = std::env::temp_dir()
     //     .join(id.to_string())
     //     .with_extension("wav");
-
+    return Err(RustError::Error {
+        msg: "Not implemented".into(),
+    });
+    let device_name = device_name_state.0.clone();
     let host = cpal::default_host();
-    let device = manager
-        .0
-        .lock()
-        .unwrap()
-        .device(&host)
-        .map_err(|e| RustError::Error {
+    let device = manager::device(&host, (*device_name.lock().unwrap()).clone()).map_err(|e| {
+        RustError::Error {
             msg: format!("{:?}", e),
-        })?;
+        }
+    })?;
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
     let t1_buffer = buffer.clone();
     let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -201,13 +248,11 @@ async fn recognize(manager: State<'_, ManagerState>) -> RustResult<Track> {
         msg: format!("{:?}", e),
     })?;
 
-    while buffer.lock().unwrap().len() < 48000 * 5 {
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-    }
+    std::thread::sleep(std::time::Duration::from_millis(5000));
     drop(stream);
     debug!("recognize stream dropped");
     let b = buffer.lock().unwrap().clone();
-    let trck = from_buffer(b, 48000).map_err(|e| RustError::Error {
+    let trck = from_buffer(b, 44100).map_err(|e| RustError::Error {
         msg: format!("{:?}", e),
     })?;
     let obj = trck.as_object();
@@ -276,12 +321,20 @@ async fn recognize(manager: State<'_, ManagerState>) -> RustResult<Track> {
 fn main() {
     env_logger::init();
     debug!("rust");
+    let audio_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let buffer_resolution = Arc::new(Mutex::new(1024usize));
+    let buffer_max_length = Arc::new(Mutex::new(44100usize));
+    let is_streaming = Arc::new(Mutex::new(false));
+    let req_streaming = Arc::new(Mutex::new(false));
+    let device_name = Arc::new(Mutex::new(None));
+
     tauri::Builder::default()
-        .setup(|app| {
-            app.manage(ManagerState(Mutex::new(Manager::new())));
-            app.manage(Signal(Arc::new(Mutex::new(Vec::<f32>::new()))));
-            Ok(())
-        })
+        .manage(AudioBufferState(audio_buffer))
+        .manage(BufferResolutionState(buffer_resolution))
+        .manage(BufferMaxLengthState(buffer_max_length))
+        .manage(IsStreamingState(is_streaming))
+        .manage(ReqStreamingState(req_streaming))
+        .manage(DeviceNameState(device_name))
         .invoke_handler(tauri::generate_handler![
             emit_signal,
             init_audio_capture,

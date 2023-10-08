@@ -1,7 +1,7 @@
 use std::ops::Div;
 
 use crate::manager::{self};
-use cpal::traits::DeviceTrait;
+use cpal::{traits::DeviceTrait, SampleRate};
 
 pub fn build<T>(device: cpal::Device, data_callback: T) -> StreamResult<cpal::Stream>
 where
@@ -11,10 +11,10 @@ where
         .supported_input_configs()?
         .next()
         .ok_or(StreamError::NoConfigAvailable)?
-        .with_sample_rate(cpal::SampleRate(48000));
+        .with_sample_rate(SampleRate(44100));
     let config: cpal::StreamConfig = config.into();
     let num_channels = config.channels as usize;
-
+    log::info!("sample_rate: {}", config.sample_rate.0);
     let stream = device.build_input_stream(
         &config,
         move |data: &[f32], info| {
