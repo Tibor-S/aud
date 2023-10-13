@@ -262,6 +262,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "tempfile",
  "thiserror",
  "uuid 1.4.1",
 ]

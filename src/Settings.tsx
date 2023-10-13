@@ -70,6 +70,12 @@ export default (props: {
         <button onClick={async () => {
           let promises: Promise<any>[] = []        
           console.log("apply")
+
+          await invoke("stop_stream", {})
+          .catch((err: Error) => {
+            console.error(err)
+          });
+
           promises.push(invoke("change_device", { name: device() })
             .catch((err: Error) => {
               console.error(err)
@@ -79,11 +85,6 @@ export default (props: {
             .catch((err: Error) => {
               console.error(err)
             }));
-
-          promises.push(invoke("stop_stream", {})
-          .catch((err: Error) => {
-            console.error(err)
-          }));
 
           
           await Promise.all(promises)

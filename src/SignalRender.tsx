@@ -50,6 +50,7 @@ export default (props: JSX.CanvasHTMLAttributes<HTMLCanvasElement>) => {
   
   listen<number[]>('signal', (event) => {
     // console.log("window_event (get-data):", payload)
+    // console.log("signal", event.payload.length)
     setAudioSignal(event.payload)
   })
 
